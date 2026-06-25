@@ -1,0 +1,455 @@
+#!/bin/bash
+# cib - C Is Bloated? Not anymore.
+# Usage: cib [options] <file>
+# Options:
+#   -S          Generate assembly (.s) and stop (keeps the .s file)
+#   -as         Assemble an existing .s file (skip C compilation/injection)
+#   -h, --help  Show this help
+
+set -e
+
+# ---------- Help ----------
+show_usage() {
+    cat <<EOF
+Usage: cib [options] <file.c|file.s>
+
+Options:
+  -S          Generate assembly (.s) file from C source and stop (keeps .s)
+  -as         Assemble an existing .s file (skip C compilation/injection)
+  -h, --help  Show this help
+
+Examples:
+  cib main.c               # Compile, link, strip → executable main
+  cib -S main.c            # Generate main.s and exit
+  cib main.c -S            # Same (options can be after the file)
+  cib main.s -as           # Assemble main.s → executable main
+EOF
+    exit 0
+}
+
+# ---------- Parse arguments (order independent) ----------
+MODE="normal"
+KEEP_ASM=0
+ASSEMBLE_ONLY=0
+INPUT=""
+
+for arg in "$@"; do
+    case "$arg" in
+        -S)
+            KEEP_ASM=1
+            MODE="asm"
+            ;;
+        -as)
+            ASSEMBLE_ONLY=1
+            MODE="assemble"
+            ;;
+        -h|--help|-?)
+            show_usage
+            ;;
+        --)
+            # Ignore --, but continue (no further options processed)
+            ;;
+        -*)
+            echo "❌ Unknown option: $arg"
+            show_usage
+            exit 1
+            ;;
+        *)
+            # First non-option argument is the input file
+            if [ -z "$INPUT" ]; then
+                INPUT="$arg"
+            else
+                echo "❌ Multiple input files specified: $INPUT and $arg"
+                exit 1
+            fi
+            ;;
+    esac
+done
+
+if [ -z "$INPUT" ]; then
+    show_usage
+fi
+
+if [ ! -f "$INPUT" ]; then
+    echo "❌ File not found: $INPUT"
+    exit 1
+fi
+
+# ---------- Determine base name ----------
+if [ "$MODE" = "assemble" ]; then
+    # Expect a .s file
+    if [[ ! "$INPUT" =~ \.s$ ]] && [[ ! "$INPUT" =~ \.S$ ]]; then
+        echo "❌ For -as, input must be an assembly file (.s or .S)"
+        exit 1
+    fi
+    BASENAME="${INPUT%.s}"
+    BASENAME="${BASENAME%.S}"   # in case .S
+else
+    if [[ ! "$INPUT" =~ \.c$ ]]; then
+        echo "❌ Input file must be a .c file (unless using -as)"
+        exit 1
+    fi
+    BASENAME="${INPUT%.c}"
+fi
+
+
+# ---------- Setup temporary files ----------
+# For normal and asm modes, we need a temporary C source with injected code.
+# For assemble mode, we don't need the temporary C file.
+if [ "$MODE" != "assemble" ]; then
+    TMP_SRC=$(mktemp /tmp/cib_XXXXXX.c)
+    # For asm mode, we'll output directly to BASENAME.s and keep it.
+    if [ "$KEEP_ASM" -eq 1 ]; then
+        TMP_S="${BASENAME}.s"
+    else
+        TMP_S=$(mktemp /tmp/cib_XXXXXX.s)
+    fi
+    TMP_O=$(mktemp /tmp/cib_XXXXXX.o)
+else
+    # For assemble-only, we only need the .s input; we'll assemble directly.
+    TMP_SRC=""
+    TMP_S=""
+    TMP_O=""
+fi
+
+# Clean up temporary files on exit (except when KEEP_ASM is set)
+cleanup() {
+    [ -n "$TMP_SRC" ] && rm -f "$TMP_SRC"
+    if [ "$KEEP_ASM" -eq 0 ] && [ -n "$TMP_S" ]; then
+        rm -f "$TMP_S"
+    fi
+    [ -n "$TMP_O" ] && rm -f "$TMP_O"
+    rm -f link.ld
+}
+trap cleanup EXIT
+
+# ---------- Check for sstrip ----------
+if ! command -v sstrip &>/dev/null; then
+    echo "⚠️  sstrip not found. Install it from:"
+    echo "   git clone https://github.com/BR903/ELFkickers.git"
+    echo "   cd ELFkickers/sstrip && make && sudo make install"
+    echo ""
+    echo "Continuing without sstrip (binary will be slightly larger)."
+    HAS_SSTRIP=0
+else
+    HAS_SSTRIP=1
+fi
+
+# ---------- Mode: assemble only ----------
+if [ "$MODE" = "assemble" ]; then
+    echo "🔧 Assembling $INPUT ..."
+    # We'll assemble and link directly.
+    # We need a linker script (same as before)
+    cat > link.ld << 'EOF'
+PHDRS
+{
+    text PT_LOAD FILEHDR PHDRS;
+}
+SECTIONS
+{
+    . = 0x400000 + SIZEOF_HEADERS;
+    .text : { *(.text*) *(.rodata*) } :text
+    .data : { *(.data*) *(.bss*) *(COMMON) } :text
+
+    /* THE BLACK HOLE: Delete the GNU bloat permanently */
+    /DISCARD/ : {
+        *(.note.*)
+        *(.comment)
+        *(.eh_frame)
+    }
+}
+EOF
+
+
+
+
+
+# Use the file name from the environment variable
+file="$INPUT"
+# Safety checks
+if [[ -z "$file" ]]; then
+    echo "ERROR: \INPUT is not set." >&2
+    exit 1
+fi
+if [[ ! -f "$file" ]]; then
+    echo "ERROR: File '$file' does not exist." >&2
+    exit 1
+fi
+
+# Find the line number of the LAST line that contains 'ret' (ignoring spaces/tabs)
+line_num=$(grep -n '^\s*ret\s*$' "$file" | tail -1 | cut -d: -f1)
+
+# If no 'ret' found, exit with a message
+if [[ -z "$line_num" ]]; then
+    echo "No 'ret' line found – nothing to delete. Appending code anyway." >&2
+else
+    # Delete that specific line
+    sed -i "${line_num}d" "$file"
+    echo "Removed line $line_num (last 'ret')."
+fi
+
+# Append the new assembly code + two extra newlines
+printf "    mov rdi, rax\n    mov rax, 60\n    syscall\n\n\n" >> "$file"
+
+
+    # Assemble
+    as "$INPUT" -o "${BASENAME}.o"
+    # Link
+    
+
+    
+    ld -n -m elf_x86_64 -static -o "$BASENAME" -e main "${BASENAME}.o" -T link.ld --gc-sections --build-id=none
+    # Strip
+    strip "$BASENAME" 2>/dev/null || true
+    # sstrip
+    if [ $HAS_SSTRIP -eq 1 ]; then
+        sstrip "$BASENAME" 2>/dev/null || true
+    fi
+    
+    #truncate -s $(($(readelf -l "$BASENAME" | awk '/NOTE/ {print $2; exit}'))) "$BASENAME"
+    f="$BASENAME"; z=$(od -An -v -t x1 -w1 "$f" | tac | awk '!x && $1=="00" {c++; next} {x=1} END {print c+0}'); [ $z -gt 0 ] && truncate -s $(( $(stat -c %s "$f") - z + 1 )) "$f"
+    
+    # Clean up object file and linker script
+    rm -f "${BASENAME}.o" link.ld
+    echo "✅ Done!"
+    ls -lh "$BASENAME"
+    echo ""
+    echo "📦 Final binary: ./$BASENAME"
+    exit 0
+fi
+
+# ---------- Mode: normal or asm (generate C with injected code) ----------
+cat > "$TMP_SRC" << 'EOF'
+typedef unsigned long size_t;
+#define NULL ((void*)0)
+
+// ==========================================
+// 1. LINUX SYSCALL WRAPPERS (INLINE ASM)
+// ==========================================
+
+static inline long sys_write(int fd, const char *buf, size_t count) {
+    long ret;
+    __asm__ volatile (
+        "syscall"
+        : "=a" (ret)
+        : "a" (1), "D" (fd), "S" (buf), "d" (count)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline long sys_read(int fd, char *buf, size_t count) {
+    long ret;
+    __asm__ volatile ("syscall" : "=a" (ret) : "a" (0), "D" (fd), "S" (buf), "d" (count) : "rcx", "r11", "memory");
+    return ret;
+}
+
+static inline void* sys_brk(void *addr) {
+    void *ret;
+    __asm__ volatile (
+        "syscall"
+        : "=a" (ret)
+        : "a" (12), "D" (addr)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+
+
+size_t strlen(const char *s) {
+    size_t len = 0;
+    while (s[len]) len++;
+    return len;
+}
+
+static inline int puts(const char *s) {
+    char nl = '\n';
+    size_t len = 0;
+    while (s[len]) len++;
+    long dummy;
+    __asm__ volatile("syscall" : "=a"(dummy) : "a"(1), "D"(1), "S"(s), "d"(len) : "rcx", "r11", "memory");
+    __asm__ volatile("syscall" : "=a"(dummy) : "a"(1), "D"(1), "S"(&nl), "d"(1) : "rcx", "r11", "memory");
+    return 0;
+}
+
+int printf(const char *format, ...) {
+    __builtin_va_list args;
+    __builtin_va_start(args, format);
+
+    for (int i = 0; format[i]; i++) {
+        if (format[i] == '%') {
+            i++;
+            if (format[i] == 'c') {
+                char c = __builtin_va_arg(args, int);
+                sys_write(1, &c, 1);
+            }
+            else if (format[i] == 'd') {
+                int n = __builtin_va_arg(args, int);
+                char s[12], *p = s;
+                do { *p++ = '0' + n % 10; } while (n /= 10);
+                while (p > s) { p--; sys_write(1, p, 1); }
+            }
+            else if (format[i] == 's') {
+                const char *s = __builtin_va_arg(args, const char*);
+                while (*s) sys_write(1, s++, 1);
+            }
+        } else {
+            sys_write(1, &format[i], 1);
+        }
+    }
+    __builtin_va_end(args);
+    return 0;
+}
+
+// Change scanf to return int
+int scanf(const char *format, char *out) {
+    char c = 0;
+    while (1) {
+        sys_read(0, &c, 1);
+        if (c != ' ' && c != '\n' && c != '\t') {
+            *out = c;
+            break;
+        }
+    }
+    return 1; // standard scanf returns number of successfully matched items
+}
+
+
+
+
+// ==========================================
+// ENTRY POINT – injected at top level
+// ==========================================
+__asm__(
+    ".intel_syntax noprefix\n"
+    ".global _start\n"
+    "_start:\n"
+    "    call main\n"
+    "    mov rdi, rax\n"
+    "    mov rax, 60\n"
+    "    syscall\n"
+);
+
+EOF
+
+# Append the user's code
+cat "$INPUT" >> "$TMP_SRC"
+
+if [ "$MODE" = "asm" ]; then
+    echo "🔧 Generating assembly $TMP_S ..."
+else
+    echo "🔧 Compiling $INPUT (with injected syscalls)..."
+fi
+
+# ---------- Linker script ----------
+cat > link.ld << 'EOF'
+PHDRS
+{
+    text PT_LOAD FILEHDR PHDRS;
+}
+SECTIONS
+{
+    . = 0x400000 + SIZEOF_HEADERS;
+    .text : { *(.text*) *(.rodata*) } :text
+    .data : { *(.data*) *(.bss*) *(COMMON) } :text
+
+    /* THE BLACK HOLE: Delete the GNU bloat permanently */
+    /DISCARD/ : {
+        *(.note.*)
+        *(.comment)
+        *(.eh_frame)
+    }
+}
+EOF
+
+
+
+# Only compilation flags go here
+gcc -S -Os -masm=intel \
+    -nostdlib \
+    -fno-pie \
+    -fno-optimize-sibling-calls \
+    -fno-asynchronous-unwind-tables \
+    -fno-dwarf2-cfi-asm \
+    -fno-builtin \
+    -fno-ident \
+    -fno-stack-protector \
+    -ffunction-sections \
+    -fdata-sections \
+    -ffreestanding \
+    -o "$TMP_S" "$TMP_SRC"
+
+
+# Step 2: Clean up assembly (remove unneeded directives)
+sed -i '/\.file/d; /\.size/d; /\.type/d; /\.section.*\.note\.GNU-stack/d;' "$TMP_S"
+
+# If we are only generating assembly, stop here.
+if [ "$MODE" = "asm" ]; then
+    echo "✅ Assembly generated: $TMP_S"
+    # Cleanup will delete TMP_SRC, TMP_O, link.ld but not TMP_S because KEEP_ASM=1
+    exit 0
+fi
+
+
+
+
+# Use the file name from the environment variable
+file="$TMP_S"
+# Safety checks
+if [[ -z "$file" ]]; then
+    echo "ERROR: \$TMP_S is not set." >&2
+    exit 1
+fi
+if [[ ! -f "$file" ]]; then
+    echo "ERROR: File '$file' does not exist." >&2
+    exit 1
+fi
+
+# Find the line number of the LAST line that contains 'ret' (ignoring spaces/tabs)
+line_num=$(grep -n '^\s*ret\s*$' "$file" | tail -1 | cut -d: -f1)
+
+# If no 'ret' found, exit with a message
+if [[ -z "$line_num" ]]; then
+    echo "No 'ret' line found – nothing to delete. Appending code anyway." >&2
+else
+    # Delete that specific line
+    sed -i "${line_num}d" "$file"
+    echo "Removed line $line_num (last 'ret')."
+fi
+
+# Append the new assembly code + two extra newlines
+printf "    mov rdi, rax\n    mov rax, 60\n    syscall\n\n\n" >> "$file"
+
+
+
+
+# Step 3: Assemble
+as "$TMP_S" -o "$TMP_O"
+
+
+
+# Step 4: Link (output = original basename)
+ld -n -m elf_x86_64 -static -o "$BASENAME" -e main "$TMP_O" -T link.ld --gc-sections
+
+# Step 5: Strip
+strip "$BASENAME" 2>/dev/null || true
+
+# Step 6: sstrip (if available)
+if [ $HAS_SSTRIP -eq 1 ]; then
+    sstrip "$BASENAME" 2>/dev/null || true
+fi
+
+# Remove NOTE segment
+OFFSET=$(readelf -l "$BASENAME" 2>/dev/null | awk '/NOTE/ {print $2; exit}')
+if [ -n "$OFFSET" ]; then
+    truncate -s $((OFFSET)) "$BASENAME" 2>/dev/null || true
+fi
+
+#truncate -s $(($(readelf -l "$BASENAME" | awk '/NOTE/ {print $2; exit}'))) "$BASENAME"
+f="$BASENAME"; z=$(od -An -v -t x1 -w1 "$f" | tac | awk '!x && $1=="00" {c++; next} {x=1} END {print c+0}'); [ $z -gt 0 ] && truncate -s $(( $(stat -c %s "$f") - z + 1 )) "$f"
+
+echo "✅ Done!"
+ls -lh "$BASENAME"
+echo ""
+echo "📦 Final binary: ./$BASENAME"
