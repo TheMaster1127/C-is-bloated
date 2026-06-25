@@ -166,7 +166,7 @@ cib hello.c
 cib ttt.c
 ```
 
-### Becomes 1490 bytes statically linked binary
+### Becomes 1672 bytes statically linked binary
 
 ---
 
