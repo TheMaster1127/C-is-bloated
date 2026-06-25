@@ -59,8 +59,8 @@ cib provides a minimal set of functions. Use them as-is, or add your own.
 | `printf()` | ✅ (`%c`, `%d`, `%s`) |
 | `scanf()` | ✅ (basic) |
 | `strlen()` | ✅ |
-| `malloc()` | ⚠️ |
-| `free()` | ⚠️ |
+| `malloc()` | ✅⚠️ |
+| `free()` | ✅⚠️ |
 
 > ⚠️ `malloc()` and `free()` are implemented via `sys_brk()`. They work, but they're minimal — no heap consolidation, no free list merging. Use them for simple allocations.
 
