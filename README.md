@@ -56,7 +56,7 @@ cib provides a minimal set of functions. Use them as-is, or add your own.
 | `sys_read()` | ✅ |
 | `sys_brk()` | ✅ |
 | `puts()` | ✅ |
-| `printf()` | ✅ (`%c`, `%d`, `%s`) |
+| `printf()` | ✅ But only - (`%c`, `%d`, `%s`) |
 | `scanf()` | ✅ (basic) |
 | `strlen()` | ✅ |
 | `malloc()` | ✅⚠️ |
