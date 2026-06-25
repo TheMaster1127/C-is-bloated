@@ -24,17 +24,21 @@ With default GCC, you get a binary that's **~900KB**. Most of that is:
 
 **cib removes all of it.**
 
+---
+
 ## The Solution
 
-With `cib`, the same code compiles to **183 bytes** — statically linked, no libc, no startup overhead, no bullshit.
+With `cib`, the same code compiles to **180 bytes** — statically linked, no libc, no startup overhead, no bullshit.
 
 ```bash
 $ cib hello.c
 ✅ Done!
--rwxr-xr-x 1 user user 183 Jun 25 17:10 hello
+-rwxr-xr-x 1 user user 180 Jun 25 17:10 hello
 $ ./hello
 Hello, World!
 ```
+
+---
 
 ## How It Works
 
@@ -45,6 +49,8 @@ Hello, World!
 5. **Links with a custom linker script** — merges sections, discards GNU bloat
 6. **Strips everything** — `strip` + `sstrip` remove symbols and section headers
 7. **Truncates trailing garbage** — removes NOTE segments and null bytes
+
+---
 
 ## Supported Functions
 
@@ -64,6 +70,7 @@ cib provides a minimal set of functions. Use them as-is, or add your own.
 
 > ⚠️ `malloc()` and `free()` are implemented via `sys_brk()`. They work, but they're minimal — no heap consolidation, no free list merging. Use them for simple allocations.
 
+---
 
 ### What's Not Supported
 
@@ -74,6 +81,8 @@ cib provides a minimal set of functions. Use them as-is, or add your own.
 
 You can add more functions by editing the cib source, or by including them directly in your C code. Just don't rely on libc — otherwise your binary won't be small.
 
+---
+
 ## Trade-offs
 
 | Use cib if you want... | Use libc if you need... |
@@ -83,6 +92,8 @@ You can add more functions by editing the cib source, or by including them direc
 | Your code runs on the first CPU cycle | Portable code |
 | To own everything | To save time writing wrappers |
 
+---
+
 ## Platform Support
 
 - **Architecture:** x86-64 (64-bit)
@@ -90,6 +101,8 @@ You can add more functions by editing the cib source, or by including them direc
 - **Binary Format:** ELF64
 
 It may work on ARM or other platforms with modifications — you'll need to adjust the syscall numbers and ABI.
+
+---
 
 ## Requirements
 
@@ -99,6 +112,26 @@ It may work on ARM or other platforms with modifications — you'll need to adju
 - `strip`
 - `sstrip` (from [ELFkickers](https://github.com/BR903/ELFkickers))
 
+---
+
+## Installation
+
+### Step 1.
+
+```bash
+sudo cp cib /usr/local/bin/
+```
+
+### Step 2.
+
+```bash
+sudo chmod +x /usr/local/bin/cib
+```
+
+Now you can run `cib` from anywhere.
+
+---
+
 ## Usage
 
 ```bash
@@ -107,7 +140,9 @@ cib -S main.c            # Generate assembly (.s) and stop
 cib main.s -as           # Assemble existing .s file
 ```
 
-## Example
+---
+
+## Example `hello.c`
 
 ```c
 int main() {
@@ -117,12 +152,25 @@ int main() {
 ```
 
 ```bash
-$ cib hello.c
-✅ Done!
--rwxr-xr-x 1 user user 183 Jun 25 17:10 hello
+cib hello.c
 ```
 
+### Becomes 180 bytes statically linked binary
+
 ---
+
+## Example 2 `ttt.c` - From the project folder, it's a Tic-Tac-Toe written by me quickly, just to see if I can make it smaller.
+
+
+```bash
+cib ttt.c
+```
+
+### Becomes 1490 bytes statically linked binary
+
+---
+
+## C is or was bloated. You decide.
 
 ## License
 

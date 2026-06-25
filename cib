@@ -189,7 +189,7 @@ else
 fi
 
 # Append the new assembly code + two extra newlines
-printf "    mov rdi, rax\n    mov rax, 60\n    syscall\n\n\n" >> "$file"
+printf "    mov edi, eax\n    mov eax, 60\n    syscall\n\n\n" >> "$file"
 
 
     # Assemble
@@ -316,21 +316,6 @@ int scanf(const char *format, char *out) {
 }
 
 
-
-
-// ==========================================
-// ENTRY POINT – injected at top level
-// ==========================================
-__asm__(
-    ".intel_syntax noprefix\n"
-    ".global _start\n"
-    "_start:\n"
-    "    call main\n"
-    "    mov rdi, rax\n"
-    "    mov rax, 60\n"
-    "    syscall\n"
-);
-
 EOF
 
 # Append the user's code
@@ -419,7 +404,7 @@ else
 fi
 
 # Append the new assembly code + two extra newlines
-printf "    mov rdi, rax\n    mov rax, 60\n    syscall\n\n\n" >> "$file"
+printf "    mov edi, eax\n    mov eax, 60\n    syscall\n\n\n" >> "$file"
 
 
 
