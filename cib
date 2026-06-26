@@ -189,7 +189,8 @@ else
 fi
 
 # Append the new assembly code + two extra newlines
-printf "    mov edi, eax\n    mov eax, 60\n    syscall\n\n\n" >> "$file"
+# Append the optimized exit assembly (saves another 2 bytes!)
+printf "        push 60\n    pop rax\n    syscall\n\n\n" >> "$file"
 
 
     # Assemble
@@ -198,7 +199,7 @@ printf "    mov edi, eax\n    mov eax, 60\n    syscall\n\n\n" >> "$file"
     
 
     
-    ld -n -m elf_x86_64 -static -o "$BASENAME" -e main "${BASENAME}.o" -T link.ld --gc-sections --build-id=none
+    ld -n -m elf_x86_64 -static -o "$BASENAME" -e _main "${BASENAME}.o" -T link.ld --gc-sections --build-id=none
     # Strip
     strip "$BASENAME" 2>/dev/null || true
     # sstrip
@@ -262,6 +263,7 @@ size_t strlen(const char *s) {
     while (s[len]) len++;
     return len;
 }
+
 
 static inline int puts(const char *s) {
     size_t len = 0;
@@ -327,10 +329,43 @@ int scanf(const char *format, char *out) {
     return 1; // standard scanf returns number of successfully matched items
 }
 
+
+
+
 EOF
 
-# Append the user's code
-cat "$INPUT" >> "$TMP_SRC"
+# Automatically and surgically rewrite return statements inside main
+awk '
+/^[[:space:]]*(int|void)?[ \t]*main\s*\(/ {
+    sub(/main/, "_main")
+    in_main = 1
+}
+in_main && /^[[:space:]]*return[[:space:]]+[^;]+;/ {
+    # Extract exactly what is being returned (number, negative, or variable)
+    expr = $0
+    sub(/^[[:space:]]*return[[:space:]]+/, "", expr)
+    sub(/[[:space:]]*;.*$/, "", expr)
+    
+    # If it is 0, use our 2-byte xor optimization
+    if (expr == "0") {
+        rep = "__asm__ volatile(\"xor edi, edi\");"
+    } 
+    # Otherwise, pass whatever they wrote directly to GCC as an inline constraint
+    else {
+        rep = "__asm__ volatile(\"mov edi, %0\" : : \"ri\"(" expr "));"
+    }
+    
+    sub(/return[[:space:]]+[^;]+;/, rep)
+}
+{ print }
+' "$INPUT" >> "$TMP_SRC"
+
+# Then append the poison pragma
+cat >> "$TMP_SRC" << 'EOF'
+
+// This disallows any functions to be defined below main
+#pragma GCC poison void int char short long float double signed unsigned struct union enum typedef static extern inline auto
+EOF
 
 if [ "$MODE" = "asm" ]; then
     echo "🔧 Generating assembly $TMP_S ..."
@@ -374,7 +409,10 @@ gcc -S -Os -masm=intel \
     -ffunction-sections \
     -fdata-sections \
     -ffreestanding \
-    -o "$TMP_S" "$TMP_SRC"
+    -o "$TMP_S" "$TMP_SRC" 2> /tmp/cib_warnings.log || { cat /tmp/cib_warnings.log >&2; exit 1; }
+
+# Print all normal warnings, but swallow the multi-line call-clobbered panic attack
+awk '/call-clobbered register used for global register variable/ {skip=1; next} /^[^ \t]/ {skip=0} !skip' /tmp/cib_warnings.log >&2 || true
 
 
 # Step 2: Clean up assembly (remove unneeded directives)
@@ -415,7 +453,8 @@ else
 fi
 
 # Append the new assembly code + two extra newlines
-printf "    mov edi, eax\n    mov eax, 60\n    syscall\n\n\n" >> "$file"
+# Append the optimized exit assembly (saves another 2 bytes!)
+printf "        push 60\n    pop rax\n    syscall\n\n\n" >> "$file"
 
 
 
@@ -426,7 +465,7 @@ as "$TMP_S" -o "$TMP_O"
 
 
 # Step 4: Link (output = original basename)
-ld -n -m elf_x86_64 -static -o "$BASENAME" -e main "$TMP_O" -T link.ld --gc-sections
+ld -n -m elf_x86_64 -static -o "$BASENAME" -e _main "$TMP_O" -T link.ld --gc-sections
 
 # Step 5: Strip
 strip "$BASENAME" 2>/dev/null || true

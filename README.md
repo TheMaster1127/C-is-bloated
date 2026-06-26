@@ -28,12 +28,12 @@ With default GCC, you get a binary that's **~900KB**. Most of that is:
 
 ## The Solution
 
-With `cib`, the same code compiles to **177 bytes** — statically linked, no libc, no startup overhead, no bullshit.
+With `cib`, the same code compiles to **173 bytes** — statically linked, no libc, no startup overhead, no bullshit.
 
 ```bash
 $ cib hello.c
 ✅ Done!
--rwxr-xr-x 1 user user 177 Jun 25 17:10 hello
+-rwxr-xr-x 1 user user 173 Jun 25 17:10 hello
 $ ./hello
 Hello, World!
 ```
@@ -49,6 +49,9 @@ Hello, World!
 5. **Links with a custom linker script** — merges sections, discards GNU bloat
 6. **Strips everything** — `strip` + `sstrip` remove symbols and section headers
 7. **Truncates trailing garbage** — removes NOTE segments and null bytes
+8. **String-Literal Constraint Optimization** — Replaces local stack variables inside system call wrappers (like `char nl = '\n'`) with direct string-literal constraints (`"S"("\n")`). This prevents the compiler from generating instructions to allocate stack frames and write to memory at runtime, shaving off **3 bytes** of instruction bloat.
+9. **The C ABI & C99 `main` Hijack** — Bypasses standard C calling conventions (which mandate returning values through the `EAX` register) by declaring a global register variable `register int _edi asm("edi")` and macro-redefining `return` to `_edi =`. By also renaming `main` to `_main` to bypass implicit C99 return-zero bloat, GCC is forced to write exit codes directly into the destination syscall register (`edi`) using an optimized `xor edi, edi`, shaving off **2 bytes**.
+10. **Stack-Squeezed Exit Syscall** — Replaces the standard 5-byte `mov eax, 60` instruction (`B8 3C 00 00 00`) with a 3-byte `push 60; pop rax` sequence (`6A 3C 58`). Because the immediate value `60` is small, the CPU utilizes the highly compressed `push imm8` opcode, leaving a net-zero footprint on the stack pointer while shaving off **2 bytes** of machine code.
 
 ---
 
@@ -155,7 +158,7 @@ int main() {
 cib hello.c
 ```
 
-### Becomes 177 bytes statically linked binary
+### Becomes 173 bytes statically linked binary
 
 ---
 
@@ -166,7 +169,7 @@ cib hello.c
 cib ttt.c
 ```
 
-### Becomes 1672 bytes statically linked binary
+### Becomes 1696 bytes statically linked binary
 
 ---
 

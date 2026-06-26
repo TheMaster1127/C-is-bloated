@@ -116,7 +116,7 @@ int main() {
             gameState = 1;
         }
         else {
-            printf("ERROR YOU ENTERED THE WRONG THING ONLY 123456789\n\n");
+            puts("ERROR YOU ENTERED THE WRONG THING ONLY 123456789\n");
         }
     }
 
@@ -135,7 +135,7 @@ int main() {
 
     }
     else {
-     printf("The spot is already taken.\n");
+     puts("The spot is already taken.");
     }
  
  print_board(game_arr);
@@ -166,16 +166,16 @@ if (gameState != 99) {
 }
  
  if (win == 0) {
-    printf("player 1 wins!!!\n");
+    puts("player 1 wins!!!");
  }
  else {
      
      if (win == 99) {
-    printf("DRAW NO ONE WINS!!!\n");
+    puts("DRAW NO ONE WINS!!!");
      }
      else {
      
-    printf("player 2 wins!!!\n");
+    puts("player 2 wins!!!");
      }
  }
     return 0;
