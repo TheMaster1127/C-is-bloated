@@ -92,7 +92,6 @@ else
     BASENAME="${INPUT%.c}"
 fi
 
-
 # ---------- Setup temporary files ----------
 # For normal and asm modes, we need a temporary C source with injected code.
 # For assemble mode, we don't need the temporary C file.
@@ -160,45 +159,9 @@ SECTIONS
 }
 EOF
 
-
-
-
-
-# Use the file name from the environment variable
-file="$INPUT"
-# Safety checks
-if [[ -z "$file" ]]; then
-    echo "ERROR: \INPUT is not set." >&2
-    exit 1
-fi
-if [[ ! -f "$file" ]]; then
-    echo "ERROR: File '$file' does not exist." >&2
-    exit 1
-fi
-
-# Find the line number of the LAST line that contains 'ret' (ignoring spaces/tabs)
-line_num=$(grep -n '^\s*ret\s*$' "$file" | tail -1 | cut -d: -f1)
-
-# If no 'ret' found, exit with a message
-if [[ -z "$line_num" ]]; then
-    echo "No 'ret' line found – nothing to delete. Appending code anyway." >&2
-else
-    # Delete that specific line
-    sed -i "${line_num}d" "$file"
-    echo "Removed line $line_num (last 'ret')."
-fi
-
-# Append the new assembly code + two extra newlines
-# Append the optimized exit assembly (saves another 2 bytes!)
-printf "        push 60\n    pop rax\n    syscall\n\n\n" >> "$file"
-
-
     # Assemble
     as "$INPUT" -o "${BASENAME}.o"
-    # Link
-    
-
-    
+    # Link 
     ld -n -m elf_x86_64 -static -o "$BASENAME" -e _main "${BASENAME}.o" -T link.ld --gc-sections --build-id=none
     # Strip
     strip "$BASENAME" 2>/dev/null || true
@@ -329,9 +292,6 @@ int scanf(const char *format, char *out) {
     return 1; // standard scanf returns number of successfully matched items
 }
 
-
-
-
 EOF
 
 # Automatically and surgically rewrite return statements inside main
@@ -394,9 +354,7 @@ SECTIONS
 }
 EOF
 
-
-
-# Only compilation flags go here
+# MASTER COMMAND
 gcc -S -Os -masm=intel \
     -nostdlib \
     -fno-pie \
@@ -414,19 +372,8 @@ gcc -S -Os -masm=intel \
 # Print all normal warnings, but swallow the multi-line call-clobbered panic attack
 awk '/call-clobbered register used for global register variable/ {skip=1; next} /^[^ \t]/ {skip=0} !skip' /tmp/cib_warnings.log >&2 || true
 
-
 # Step 2: Clean up assembly (remove unneeded directives)
 sed -i '/\.file/d; /\.size/d; /\.type/d; /\.section.*\.note\.GNU-stack/d;' "$TMP_S"
-
-# If we are only generating assembly, stop here.
-if [ "$MODE" = "asm" ]; then
-    echo "✅ Assembly generated: $TMP_S"
-    # Cleanup will delete TMP_SRC, TMP_O, link.ld but not TMP_S because KEEP_ASM=1
-    exit 0
-fi
-
-
-
 
 # Use the file name from the environment variable
 file="$TMP_S"
@@ -449,20 +396,21 @@ if [[ -z "$line_num" ]]; then
 else
     # Delete that specific line
     sed -i "${line_num}d" "$file"
-    echo "Removed line $line_num (last 'ret')."
 fi
 
 # Append the new assembly code + two extra newlines
 # Append the optimized exit assembly (saves another 2 bytes!)
-printf "        push 60\n    pop rax\n    syscall\n\n\n" >> "$file"
+printf "    push 60\n    pop rax\n    syscall\n\n\n" >> "$file"
 
-
-
+# If we are only generating assembly, stop here.
+if [ "$MODE" = "asm" ]; then
+    echo "✅ Assembly generated: $TMP_S"
+    # Cleanup will delete TMP_SRC, TMP_O, link.ld but not TMP_S because KEEP_ASM=1
+    exit 0
+fi
 
 # Step 3: Assemble
 as "$TMP_S" -o "$TMP_O"
-
-
 
 # Step 4: Link (output = original basename)
 ld -n -m elf_x86_64 -static -o "$BASENAME" -e _main "$TMP_O" -T link.ld --gc-sections
