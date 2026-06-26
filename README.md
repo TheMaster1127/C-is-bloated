@@ -28,12 +28,12 @@ With default GCC, you get a binary that's **~900KB**. Most of that is:
 
 ## The Solution
 
-With `cib`, the same code compiles to **180 bytes** — statically linked, no libc, no startup overhead, no bullshit.
+With `cib`, the same code compiles to **177 bytes** — statically linked, no libc, no startup overhead, no bullshit.
 
 ```bash
 $ cib hello.c
 ✅ Done!
--rwxr-xr-x 1 user user 180 Jun 25 17:10 hello
+-rwxr-xr-x 1 user user 177 Jun 25 17:10 hello
 $ ./hello
 Hello, World!
 ```
@@ -155,7 +155,7 @@ int main() {
 cib hello.c
 ```
 
-### Becomes 180 bytes statically linked binary
+### Becomes 177 bytes statically linked binary
 
 ---
 

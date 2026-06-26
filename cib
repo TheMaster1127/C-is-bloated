@@ -264,12 +264,24 @@ size_t strlen(const char *s) {
 }
 
 static inline int puts(const char *s) {
-    char nl = '\n';
     size_t len = 0;
-    while (s[len]) len++;
+    while (s[len]) len++;          // strlen
+
     long dummy;
-    __asm__ volatile("syscall" : "=a"(dummy) : "a"(1), "D"(1), "S"(s), "d"(len) : "rcx", "r11", "memory");
-    __asm__ volatile("syscall" : "=a"(dummy) : "a"(1), "D"(1), "S"(&nl), "d"(1) : "rcx", "r11", "memory");
+    // write(1, s, len)
+    __asm__ volatile(
+        "syscall"
+        : "=a"(dummy)
+        : "a"(1), "D"(1), "S"(s), "d"(len)
+        : "rcx", "r11", "memory"
+    );
+    // write(1, "\n", 1)
+    __asm__ volatile(
+        "syscall"
+        : "=a"(dummy)
+        : "a"(1), "D"(1), "S"("\n"), "d"(1)
+        : "rcx", "r11", "memory"
+    );
     return 0;
 }
 
