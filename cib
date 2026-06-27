@@ -294,28 +294,43 @@ int scanf(const char *format, char *out) {
 
 EOF
 
-# Automatically and surgically rewrite return statements inside main
+
+
+
+# Automatically and surgically rewrite EVERY return statement inside main
 awk '
 /^[[:space:]]*(int|void)?[ \t]*main\s*\(/ {
     sub(/main/, "_main")
     in_main = 1
 }
-in_main && /^[[:space:]]*return[[:space:]]+[^;]+;/ {
-    # Extract exactly what is being returned (number, negative, or variable)
-    expr = $0
-    sub(/^[[:space:]]*return[[:space:]]+/, "", expr)
-    sub(/[[:space:]]*;.*$/, "", expr)
-    
-    # If it is 0, use our 2-byte xor optimization
-    if (expr == "0") {
-        rep = "__asm__ volatile(\"xor edi, edi\");"
-    } 
-    # Otherwise, pass whatever they wrote directly to GCC as an inline constraint
-    else {
-        rep = "__asm__ volatile(\"mov edi, %0\" : : \"ri\"(" expr "));"
+in_main {
+    # Keep looping as long as we find the word "return" followed by a space
+    # The (^|[^a-zA-Z0-9_]) ensures we do not accidentally match variables like "my_return"
+    while (match($0, /(^|[^a-zA-Z0-9_])return[ \t]+[^;]+;/)) {
+        
+        # Grab the exact match
+        full_match = substr($0, RSTART, RLENGTH)
+        
+        # Split the prefix (like a space or bracket) from the actual "return"
+        idx = index(full_match, "return")
+        prefix = substr(full_match, 1, idx - 1)
+        stmt = substr(full_match, idx)
+        
+        # Extract the exact expression being returned (0, -1, win, etc.)
+        expr = stmt
+        sub(/^return[ \t]+/, "", expr)
+        sub(/[ \t]*;$/, "", expr)
+        
+        # Generate the optimized assembly
+        if (expr == "0") {
+            asm_code = "__asm__ volatile(\"xor edi, edi\");"
+        } else {
+            asm_code = "__asm__ volatile(\"mov edi, %0\" : : \"ri\"(" expr "));"
+        }
+        
+        # Surgically reassemble the line with the assembly injected
+        $0 = substr($0, 1, RSTART - 1) prefix asm_code substr($0, RSTART + RLENGTH)
     }
-    
-    sub(/return[[:space:]]+[^;]+;/, rep)
 }
 { print }
 ' "$INPUT" >> "$TMP_SRC"
