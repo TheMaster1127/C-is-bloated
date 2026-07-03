@@ -68,6 +68,7 @@ cib provides a minimal set of functions. Use them as-is, or add your own.
 | `printf()` | ✅ But only - (`%c`, `%d`, `%s`) |
 | `scanf()` | ✅ (basic) |
 | `strlen()` | ✅ |
+| `GET_PARAMETERS()` | ✅ (macro) |
 | `malloc()` | ✅⚠️ |
 | `free()` | ✅⚠️ |
 
@@ -170,6 +171,69 @@ cib ttt.c
 ```
 
 ### Becomes 1696 bytes statically linked binary
+
+---
+
+## Command-Line Arguments
+
+cib automatically provides access to command-line arguments via a macro.
+
+### `GET_PARAMETERS()`
+
+Uses this macro at the **start** of `main()` to extract `argc` and `argv`:
+
+```c
+int __argc;
+char **__argv;
+
+#define GET_PARAMETERS() \
+    __asm__ volatile ( \
+        "mov rax, [rsp]\n" \
+        "mov [__argc], rax\n" \
+        "lea rax, [rsp+8]\n" \
+        "mov [__argv], rax\n" \
+    )
+
+int main() {
+    GET_PARAMETERS();
+    
+    if (__argc > 1) {
+        printf("%s\n", __argv[1]);
+    }
+    
+    return 0;
+}
+```
+
+But you do not need to include that code. It's already included for you. So all you have to do is this:
+
+```c
+int main() {
+    GET_PARAMETERS();
+    
+    if (__argc > 1) {
+        printf("%s\n", __argv[1]);
+    }
+    
+    return 0;
+}
+```
+
+### Variables
+
+- `__argc` — number of command-line arguments (int)
+- `__argv` — array of argument strings (char**)
+
+### Example
+
+```bash
+$ cib hello.c
+✅ Done!
+$ ./hello world
+world
+$ ./hello 42
+42
+```
 
 ---
 

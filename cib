@@ -292,6 +292,19 @@ int scanf(const char *format, char *out) {
     return 1; // standard scanf returns number of successfully matched items
 }
 
+
+int __argc;
+char **__argv;
+
+#define GET_PARAMETERS() \
+    __asm__ volatile ( \
+        "mov rax, [rsp]\n" \
+        "mov [__argc], rax\n" \
+        "lea rax, [rsp+8]\n" \
+        "mov [__argv], rax\n" \
+    )
+
+
 EOF
 
 
@@ -415,7 +428,8 @@ fi
 
 # Append the new assembly code + two extra newlines
 # Append the optimized exit assembly (saves another 2 bytes!)
-printf "    push 60\n    pop rax\n    syscall\n\n\n" >> "$file"
+# Insert before .bss section
+sed -i '/^[[:space:]]*\.section[[:space:]]*\.bss/i\    push 60\n    pop rax\n    syscall' "$file"
 
 # If we are only generating assembly, stop here.
 if [ "$MODE" = "asm" ]; then
