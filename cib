@@ -334,11 +334,11 @@ in_main {
         sub(/^return[ \t]+/, "", expr)
         sub(/[ \t]*;$/, "", expr)
         
-        # Generate the optimized assembly
+		# Generate the optimized assembly WITH the exit syscall included inline
         if (expr == "0") {
-            asm_code = "__asm__ volatile(\"xor edi, edi\");"
+            asm_code = "{ __asm__ volatile(\"xor edi, edi\\n\\tpush 60\\n\\tpop rax\\n\\tsyscall\"); __builtin_unreachable(); }"
         } else {
-            asm_code = "__asm__ volatile(\"mov edi, %0\" : : \"ri\"(" expr "));"
+            asm_code = "{ __asm__ volatile(\"mov edi, %0\\n\\tpush 60\\n\\tpop rax\\n\\tsyscall\" : : \"ri\"(" expr ")); __builtin_unreachable(); }"
         }
         
         # Surgically reassemble the line with the assembly injected
@@ -415,21 +415,6 @@ if [[ ! -f "$file" ]]; then
     exit 1
 fi
 
-# Find the line number of the LAST line that contains 'ret' (ignoring spaces/tabs)
-line_num=$(grep -n '^\s*ret\s*$' "$file" | tail -1 | cut -d: -f1)
-
-# If no 'ret' found, exit with a message
-if [[ -z "$line_num" ]]; then
-    echo "No 'ret' line found – nothing to delete. Appending code anyway." >&2
-else
-    # Delete that specific line
-    sed -i "${line_num}d" "$file"
-fi
-
-# Append the new assembly code + two extra newlines
-# Append the optimized exit assembly (saves another 2 bytes!)
-# Insert before .bss section
-sed -i '/^[[:space:]]*\.section[[:space:]]*\.bss/i\    push 60\n    pop rax\n    syscall' "$file"
 
 # If we are only generating assembly, stop here.
 if [ "$MODE" = "asm" ]; then
