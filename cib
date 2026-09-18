@@ -383,7 +383,7 @@ SECTIONS
 EOF
 
 # MASTER COMMAND
-gcc -S -Os -masm=intel \
+gcc -S -Os -Oz -masm=intel \
     -nostdlib \
     -fno-pie \
     -fno-optimize-sibling-calls \
