@@ -69,18 +69,13 @@ cib provides a minimal set of functions. Use them as-is, or add your own.
 | `scanf()` | ✅ (basic) |
 | `strlen()` | ✅ |
 | `GET_PARAMETERS()` | ✅ (macro) |
-| `malloc()` | ✅⚠️ |
-| `free()` | ✅⚠️ |
-
-> ⚠️ `malloc()` and `free()` are implemented via `sys_brk()`. They work, but they're minimal — no heap consolidation, no free list merging. Use them for simple allocations.
 
 ---
 
 ### What's Not Supported
 
-- `malloc()` / `free()` — use `sys_brk()` if you need custom allocation
+- Anything below `main` — all helpers must go above it, never write code below `main`
 - `FILE*` — use raw syscalls
-- Floating point — add it yourself
 - Any libc function not listed above
 
 You can add more functions by editing the cib source, or by including them directly in your C code. Just don't rely on libc — otherwise your binary won't be small.
@@ -142,6 +137,8 @@ Now you can run `cib` from anywhere.
 cib main.c               # Compile to tiny binary
 cib -S main.c            # Generate assembly (.s) and stop
 cib main.s -as           # Assemble existing .s file
+cib -R main.c            # Print the generated raw C and stop
+cib -RC main.c           # Compile the raw C as-is (no return mangling)
 ```
 
 ---

@@ -16,6 +16,8 @@ Usage: cib [options] <file.c|file.s>
 Options:
   -S          Generate assembly (.s) file from C source and stop (keeps .s)
   -as         Assemble an existing .s file (skip C compilation/injection)
+  -R          Print the generated raw C and stop
+  -RC         Compile the raw C as-is (no return mangling)
   -h, --help  Show this help
 
 Examples:
@@ -23,6 +25,8 @@ Examples:
   cib -S main.c            # Generate main.s and exit
   cib main.c -S            # Same (options can be after the file)
   cib main.s -as           # Assemble main.s → executable main
+  cib -R main.c            # Print the generated raw C and stop
+  cib -RC main.c           # Compile the raw C as-is (no return mangling)
 EOF
     exit 0
 }
@@ -31,11 +35,21 @@ EOF
 MODE="normal"
 KEEP_ASM=0
 ASSEMBLE_ONLY=0
+SHOW_RAW=0
+RAW_COMPILE=0
 INPUT=""
+BACKUP=""
 
 for arg in "$@"; do
     case "$arg" in
-        -S)
+		-R)
+		    SHOW_RAW=1
+		    RAW_COMPILE=1
+		    ;;
+		-RC)
+		    RAW_COMPILE=1
+		    ;;
+        -S) 
             KEEP_ASM=1
             MODE="asm"
             ;;
@@ -348,18 +362,34 @@ in_main {
 { print }
 ' "$INPUT" >> "$TMP_SRC"
 
-# Then append the poison pragma
-cat >> "$TMP_SRC" << 'EOF'
+    cat >> "$TMP_SRC" << 'EOF'
 
 // This disallows any functions to be defined below main
 #pragma GCC poison void int char short long float double signed unsigned struct union enum typedef static extern inline auto
 EOF
+
+
+if [ "$SHOW_RAW" -eq 1 ]; then
+    cat "$TMP_SRC"
+    exit 0
+fi
+
+if [ "$RAW_COMPILE" -eq 1 ]; then
+    BACKUP=$(mktemp)
+    cp "$INPUT" "$BACKUP"
+    TMP_SRC=$INPUT
+fi
+
+
+
+
 
 if [ "$MODE" = "asm" ]; then
     echo "🔧 Generating assembly $TMP_S ..."
 else
     echo "🔧 Compiling $INPUT (with injected syscalls)..."
 fi
+
 
 # ---------- Linker script ----------
 cat > link.ld << 'EOF'
@@ -450,3 +480,9 @@ echo "✅ Done!"
 ls -lh "$BASENAME"
 echo ""
 echo "📦 Final binary: ./$BASENAME"
+
+if [ -n "$BACKUP" ]; then
+    cp "$BACKUP" "$INPUT"
+    rm -f "$BACKUP"
+    TMP_SRC=""
+fi
