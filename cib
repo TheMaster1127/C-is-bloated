@@ -1,12 +1,57 @@
 #!/bin/bash
 # cib - C Is Bloated? Not anymore.
+# Single-file version: auto-detects x86_64 or aarch64 Linux ELF.
+# Supports cross-compilation via --target=<arch>.
 # Usage: cib [options] <file>
 # Options:
-#   -S          Generate assembly (.s) and stop (keeps the .s file)
-#   -as         Assemble an existing .s file (skip C compilation/injection)
-#   -h, --help  Show this help
+#   -S              Generate assembly (.s) and stop (keeps the .s file)
+#   -as             Assemble an existing .s file (skip C compilation/injection)
+#   -t, --target=   Cross-compile for the given arch (x86_64 or aarch64)
+#   -h, --help      Show this help
 
 set -e
+
+# ---------- Platform gate ----------
+# Reject anything that is not Linux.
+
+if [ "$(uname -s)" != "Linux" ]; then
+    echo "❌ cib only runs on Linux."
+    echo "   Detected OS: $(uname -s)"
+    echo "   BSD, macOS, Windows, and any other non-Linux platform are rejected."
+    exit 1
+fi
+
+# Reject anything whose native binaries are not ELF.
+# /proc/self/exe is a symlink to the binary currently executing. If we can't
+# read its magic bytes and see 7f 45 4c 46, we're not on an ELF system.
+if [ ! -r /proc/self/exe ]; then
+    echo "❌ cib requires /proc/self/exe to verify the platform is ELF-based."
+    exit 1
+fi
+
+ELF_MAGIC=$(head -c 4 /proc/self/exe 2>/dev/null | od -An -tx1 | tr -d ' \n')
+if [ "$ELF_MAGIC" != "7f454c46" ]; then
+    echo "❌ cib requires an ELF-based environment."
+    echo "   Detected binary format: not ELF (magic: $ELF_MAGIC)"
+    exit 1
+fi
+
+# Reject anything that is not 64-bit x86 or 64-bit ARM.
+HOST_ARCH=$(uname -m)
+case "$HOST_ARCH" in
+    x86_64)
+        ;;
+    aarch64|arm64)
+        HOST_ARCH="aarch64"
+        ;;
+    *)
+        echo "❌ cib does not support your architecture."
+        echo "   Detected: $HOST_ARCH"
+        echo "   cib only supports x86_64 and aarch64 (64-bit ARM) on Linux."
+        echo "   32-bit ARM, i686, riscv64, ppc64le, s390x, etc. are rejected."
+        exit 1
+        ;;
+esac
 
 # ---------- Help ----------
 show_usage() {
@@ -14,24 +59,23 @@ show_usage() {
 Usage: cib [options] <file.c|file.s>
 
 Options:
-  -S          Generate assembly (.s) file from C source and stop (keeps .s)
-  -as         Assemble an existing .s file (skip C compilation/injection)
-  -R          Print the generated raw C and stop
-  -RC         Compile the raw C as-is (no return mangling)
-  -h, --help  Show this help
+  -S                    Generate assembly (.s) file from C source and stop (keeps .s)
+  -as                   Assemble an existing .s file (skip C compilation/injection)
+  -t <arch>             Cross-compile for the given target architecture
+  --target=<arch>       Same as -t. Accepts: x86_64, aarch64 (or amd64, arm64)
+  -R                    Print the generated raw C and stop
+  -RC                   Compile the raw C as-is (no return mangling)
+  -h, --help            Show this help
 
-Examples:
-  cib main.c               # Compile, link, strip → executable main
-  cib -S main.c            # Generate main.s and exit
-  cib main.c -S            # Same (options can be after the file)
-  cib main.s -as           # Assemble main.s → executable main
-  cib -R main.c            # Print the generated raw C and stop
-  cib -RC main.c           # Compile the raw C as-is (no return mangling)
+Native build (default):  target = host
+Cross-compile examples:
+  cib --target=aarch64 main.c     # build an aarch64 binary on an x86_64 host
+  cib --target=x86_64  main.c     # build an x86_64  binary on an aarch64 host
 EOF
     exit 0
 }
 
-# ---------- Parse arguments (order independent) ----------
+# ---------- Parse arguments ----------
 MODE="normal"
 KEEP_ASM=0
 ASSEMBLE_ONLY=0
@@ -39,23 +83,36 @@ SHOW_RAW=0
 RAW_COMPILE=0
 INPUT=""
 BACKUP=""
+TARGET_ARCH=""
 
-for arg in "$@"; do
-    case "$arg" in
-		-R)
-		    SHOW_RAW=1
-		    RAW_COMPILE=1
-		    ;;
-		-RC)
-		    RAW_COMPILE=1
-		    ;;
-        -S) 
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -R)
+            SHOW_RAW=1
+            RAW_COMPILE=1
+            ;;
+        -RC)
+            RAW_COMPILE=1
+            ;;
+        -S)
             KEEP_ASM=1
             MODE="asm"
             ;;
         -as)
             ASSEMBLE_ONLY=1
             MODE="assemble"
+            ;;
+        -t|--target)
+            shift
+            if [ $# -eq 0 ]; then
+                echo "❌ -t/--target requires an argument"
+                show_usage
+                exit 1
+            fi
+            TARGET_ARCH="$1"
+            ;;
+        --target=*)
+            TARGET_ARCH="${1#--target=}"
             ;;
         -h|--help|-?)
             show_usage
@@ -64,22 +121,111 @@ for arg in "$@"; do
             # Ignore --, but continue (no further options processed)
             ;;
         -*)
-            echo "❌ Unknown option: $arg"
+            echo "❌ Unknown option: $1"
             show_usage
             exit 1
             ;;
         *)
             # First non-option argument is the input file
             if [ -z "$INPUT" ]; then
-                INPUT="$arg"
+                INPUT="$1"
             else
-                echo "❌ Multiple input files specified: $INPUT and $arg"
+                echo "❌ Multiple input files specified: $INPUT and $1"
                 exit 1
             fi
             ;;
     esac
+    shift
 done
 
+# ---------- Normalize and validate target ----------
+if [ -z "$TARGET_ARCH" ]; then
+    TARGET_ARCH="$HOST_ARCH"
+fi
+
+case "$TARGET_ARCH" in
+    amd64) TARGET_ARCH="x86_64" ;;
+    arm64) TARGET_ARCH="aarch64" ;;
+    x86_64|aarch64) ;;
+    *)
+        echo "❌ Unsupported target: $TARGET_ARCH"
+        echo "   Only x86_64 and aarch64 (or amd64, arm64) are supported."
+        exit 1
+        ;;
+esac
+
+# ---------- Select toolchain based on target vs host ----------
+if [ "$TARGET_ARCH" = "$HOST_ARCH" ]; then
+    # Native build
+    CC=gcc
+    AS_BIN=as
+    LD_BIN=ld
+    STRIP_BIN=strip
+    TOOLCHAIN_KIND="native"
+elif [ "$TARGET_ARCH" = "x86_64" ]; then
+    # Cross: host is aarch64, target is x86_64
+    CC=x86_64-linux-gnu-gcc
+    AS_BIN=x86_64-linux-gnu-as
+    LD_BIN=x86_64-linux-gnu-ld
+    STRIP_BIN=x86_64-linux-gnu-strip
+    TOOLCHAIN_KIND="cross"
+else
+    # Cross: host is x86_64, target is aarch64
+    CC=aarch64-linux-gnu-gcc
+    AS_BIN=aarch64-linux-gnu-as
+    LD_BIN=aarch64-linux-gnu-ld
+    STRIP_BIN=aarch64-linux-gnu-strip
+    TOOLCHAIN_KIND="cross"
+fi
+
+# Architecture-specific flags for the compiler / assembler / linker.
+if [ "$TARGET_ARCH" = "x86_64" ]; then
+    LD_EMUL=elf_x86_64
+    ASM_FLAGS="-masm=intel"
+    ASM_ZERO='{ __asm__ volatile("xor edi, edi\\n\\tpush 60\\n\\tpop rax\\n\\tsyscall"); __builtin_unreachable(); }'
+    ASM_OTHER='{ __asm__ volatile("mov edi, %0\\n\\tpush 60\\n\\tpop rax\\n\\tsyscall" : : "ri"(__EXPR__)); __builtin_unreachable(); }'
+else
+    LD_EMUL=aarch64linux
+    ASM_FLAGS=""
+    ASM_ZERO='{ __asm__ volatile("mov x0, #0\\n\\tmov x8, #93\\n\\tsvc #0"); __builtin_unreachable(); }'
+    ASM_OTHER='{ __asm__ volatile("mov x0, %0\\n\\tmov x8, #93\\n\\tsvc #0" : : "ri"(__EXPR__)); __builtin_unreachable(); }'
+fi
+
+# Verify the toolchain we need is present.
+MISSING_TOOLS=""
+for tool in "$CC" "$AS_BIN" "$LD_BIN" "$STRIP_BIN"; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        MISSING_TOOLS="$MISSING_TOOLS $tool"
+    fi
+done
+
+if [ -n "$MISSING_TOOLS" ]; then
+    echo "❌ Required tool(s) not found:$MISSING_TOOLS"
+    if [ "$TOOLCHAIN_KIND" = "cross" ]; then
+        echo ""
+        echo "   Cross-compiling from $HOST_ARCH to $TARGET_ARCH needs the"
+        echo "   $TARGET_ARCH cross-toolchain installed."
+        if [ "$TARGET_ARCH" = "aarch64" ]; then
+            echo "   On Arch:  sudo pacman -S aarch64-linux-gnu-gcc"
+            echo "   On Debian/Ubuntu:  sudo apt install gcc-aarch64-linux-gnu"
+        else
+            echo "   On Arch:  install x86_64-linux-gnu-gcc (AUR or cross toolchain)"
+            echo "   On Debian/Ubuntu:  sudo apt install gcc-x86-64-linux-gnu"
+        fi
+    else
+        echo "   Install the $TARGET_ARCH toolchain and try again."
+    fi
+    exit 1
+fi
+
+# ---------- Report what we're doing ----------
+if [ "$TOOLCHAIN_KIND" = "cross" ]; then
+    echo "🔎 Platform: Linux ELF $HOST_ARCH  →  cross-compiling for $TARGET_ARCH"
+else
+    echo "🔎 Platform: Linux ELF $HOST_ARCH"
+fi
+
+# ---------- From here down, everything is target-arch-aware ----------
 if [ -z "$INPUT" ]; then
     show_usage
 fi
@@ -125,7 +271,8 @@ else
     TMP_O=""
 fi
 
-# Clean up temporary files on exit (except when KEEP_ASM is set)
+# Clean up temporary files on exit (except when KEEP_ASM is set).
+# Also restores the backup if -RC swapped TMP_SRC to point at the user's file.
 cleanup() {
     [ -n "$TMP_SRC" ] && rm -f "$TMP_SRC"
     if [ "$KEEP_ASM" -eq 0 ] && [ -n "$TMP_S" ]; then
@@ -133,6 +280,10 @@ cleanup() {
     fi
     [ -n "$TMP_O" ] && rm -f "$TMP_O"
     rm -f link.ld
+    if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then
+        cp "$BACKUP" "$INPUT"
+        rm -f "$BACKUP"
+    fi
 }
 trap cleanup EXIT
 
@@ -174,19 +325,19 @@ SECTIONS
 EOF
 
     # Assemble
-    as "$INPUT" -o "${BASENAME}.o"
-    # Link 
-    ld -n -m elf_x86_64 -static -o "$BASENAME" -e _main "${BASENAME}.o" -T link.ld --gc-sections --build-id=none
+    "$AS_BIN" "$INPUT" -o "${BASENAME}.o"
+    # Link
+    "$LD_BIN" -n -m "$LD_EMUL" -static -o "$BASENAME" -e _main "${BASENAME}.o" -T link.ld --gc-sections --build-id=none
     # Strip
-    strip "$BASENAME" 2>/dev/null || true
+    "$STRIP_BIN" "$BASENAME" 2>/dev/null || true
     # sstrip
     if [ $HAS_SSTRIP -eq 1 ]; then
         sstrip "$BASENAME" 2>/dev/null || true
     fi
-    
+
     #truncate -s $(($(readelf -l "$BASENAME" | awk '/NOTE/ {print $2; exit}'))) "$BASENAME"
     f="$BASENAME"; z=$(od -An -v -t x1 -w1 "$f" | tac | awk '!x && $1=="00" {c++; next} {x=1} END {print c+0}'); [ $z -gt 0 ] && truncate -s $(( $(stat -c %s "$f") - z + 1 )) "$f"
-    
+
     # Clean up object file and linker script
     rm -f "${BASENAME}.o" link.ld
     echo "✅ Done!"
@@ -204,6 +355,10 @@ typedef unsigned long size_t;
 // ==========================================
 // 1. LINUX SYSCALL WRAPPERS (INLINE ASM)
 // ==========================================
+EOF
+
+if [ "$TARGET_ARCH" = "x86_64" ]; then
+    cat >> "$TMP_SRC" << 'EOF'
 
 static inline long sys_write(int fd, const char *buf, size_t count) {
     long ret;
@@ -232,6 +387,38 @@ static inline void* sys_brk(void *addr) {
     );
     return ret;
 }
+EOF
+else
+    cat >> "$TMP_SRC" << 'EOF'
+
+static inline long sys_write(int fd, const char *buf, size_t count) {
+    register long x8 __asm__("x8") = 64;
+    register long x0 __asm__("x0") = fd;
+    register long x1 __asm__("x1") = (long)buf;
+    register long x2 __asm__("x2") = count;
+    __asm__ volatile ("svc #0" : "+r" (x0) : "r" (x8), "r" (x1), "r" (x2) : "memory");
+    return x0;
+}
+
+static inline long sys_read(int fd, char *buf, size_t count) {
+    register long x8 __asm__("x8") = 63;
+    register long x0 __asm__("x0") = fd;
+    register long x1 __asm__("x1") = (long)buf;
+    register long x2 __asm__("x2") = count;
+    __asm__ volatile ("svc #0" : "+r" (x0) : "r" (x8), "r" (x1), "r" (x2) : "memory");
+    return x0;
+}
+
+static inline void* sys_brk(void *addr) {
+    register long x8 __asm__("x8") = 214;
+    register long x0 __asm__("x0") = (long)addr;
+    __asm__ volatile ("svc #0" : "+r" (x0) : "r" (x8) : "memory");
+    return (void*)x0;
+}
+EOF
+fi
+
+cat >> "$TMP_SRC" << 'EOF'
 
 
 
@@ -240,7 +427,10 @@ size_t strlen(const char *s) {
     while (s[len]) len++;
     return len;
 }
+EOF
 
+if [ "$TARGET_ARCH" = "x86_64" ]; then
+    cat >> "$TMP_SRC" << 'EOF'
 
 static inline int puts(const char *s) {
     size_t len = 0;
@@ -263,6 +453,33 @@ static inline int puts(const char *s) {
     );
     return 0;
 }
+EOF
+else
+    cat >> "$TMP_SRC" << 'EOF'
+
+static inline int puts(const char *s) {
+    size_t len = 0;
+    while (s[len]) len++;          // strlen
+
+    register long x8 __asm__("x8");
+    register long x0 __asm__("x0");
+    register long x1 __asm__("x1");
+    register long x2 __asm__("x2");
+
+    // write(1, s, len)
+    x8 = 64; x0 = 1; x1 = (long)s; x2 = len;
+    __asm__ volatile ("svc #0" : "+r" (x0) : "r" (x8), "r" (x1), "r" (x2) : "memory");
+
+    // write(1, "\n", 1)
+    x8 = 64; x0 = 1; x1 = (long)"\n"; x2 = 1;
+    __asm__ volatile ("svc #0" : "+r" (x0) : "r" (x8), "r" (x1), "r" (x2) : "memory");
+
+    return 0;
+}
+EOF
+fi
+
+cat >> "$TMP_SRC" << 'EOF'
 
 int printf(const char *format, ...) {
     __builtin_va_list args;
@@ -309,6 +526,10 @@ int scanf(const char *format, char *out) {
 
 int __argc;
 char **__argv;
+EOF
+
+if [ "$TARGET_ARCH" = "x86_64" ]; then
+    cat >> "$TMP_SRC" << 'EOF'
 
 #define GET_PARAMETERS() \
     __asm__ volatile ( \
@@ -317,6 +538,24 @@ char **__argv;
         "lea rax, [rsp+8]\n" \
         "mov [__argv], rax\n" \
     )
+EOF
+else
+    cat >> "$TMP_SRC" << 'EOF'
+
+#define GET_PARAMETERS() \
+    __asm__ volatile ( \
+        "ldr x9, [sp]\n" \
+        "adrp x10, __argc\n" \
+        "str x9, [x10, :lo12:__argc]\n" \
+        "add x9, sp, #8\n" \
+        "adrp x10, __argv\n" \
+        "str x9, [x10, :lo12:__argv]\n" \
+        : : : "x9", "x10", "memory" \
+    )
+EOF
+fi
+
+cat >> "$TMP_SRC" << 'EOF'
 
 
 EOF
@@ -325,7 +564,7 @@ EOF
 
 
 # Automatically and surgically rewrite EVERY return statement inside main
-awk '
+awk -v asm_zero="$ASM_ZERO" -v asm_other="$ASM_OTHER" '
 /^[[:space:]]*(int|void)?[ \t]*main\s*\(/ {
     sub(/main/, "_main")
     in_main = 1
@@ -334,27 +573,31 @@ in_main {
     # Keep looping as long as we find the word "return" followed by a space
     # The (^|[^a-zA-Z0-9_]) ensures we do not accidentally match variables like "my_return"
     while (match($0, /(^|[^a-zA-Z0-9_])return[ \t]+[^;]+;/)) {
-        
+
         # Grab the exact match
         full_match = substr($0, RSTART, RLENGTH)
-        
+
         # Split the prefix (like a space or bracket) from the actual "return"
         idx = index(full_match, "return")
         prefix = substr(full_match, 1, idx - 1)
         stmt = substr(full_match, idx)
-        
+
         # Extract the exact expression being returned (0, -1, win, etc.)
         expr = stmt
         sub(/^return[ \t]+/, "", expr)
         sub(/[ \t]*;$/, "", expr)
-        
-		# Generate the optimized assembly WITH the exit syscall included inline
+
+        # Generate the optimized assembly WITH the exit syscall included inline
         if (expr == "0") {
-            asm_code = "{ __asm__ volatile(\"xor edi, edi\\n\\tpush 60\\n\\tpop rax\\n\\tsyscall\"); __builtin_unreachable(); }"
+            asm_code = asm_zero
         } else {
-            asm_code = "{ __asm__ volatile(\"mov edi, %0\\n\\tpush 60\\n\\tpop rax\\n\\tsyscall\" : : \"ri\"(" expr ")); __builtin_unreachable(); }"
+            asm_code = asm_other
+            pos = index(asm_code, "__EXPR__")
+            if (pos > 0) {
+                asm_code = substr(asm_code, 1, pos-1) expr substr(asm_code, pos+8)
+            }
         }
-        
+
         # Surgically reassemble the line with the assembly injected
         $0 = substr($0, 1, RSTART - 1) prefix asm_code substr($0, RSTART + RLENGTH)
     }
@@ -379,9 +622,6 @@ if [ "$RAW_COMPILE" -eq 1 ]; then
     cp "$INPUT" "$BACKUP"
     TMP_SRC=$INPUT
 fi
-
-
-
 
 
 if [ "$MODE" = "asm" ]; then
@@ -413,7 +653,8 @@ SECTIONS
 EOF
 
 # MASTER COMMAND
-gcc -S -Os -Oz -masm=intel \
+# shellcheck disable=SC2086
+"$CC" -S -Os -Oz $ASM_FLAGS \
     -nostdlib \
     -fno-pie \
     -fno-optimize-sibling-calls \
@@ -454,13 +695,13 @@ if [ "$MODE" = "asm" ]; then
 fi
 
 # Step 3: Assemble
-as "$TMP_S" -o "$TMP_O"
+"$AS_BIN" "$TMP_S" -o "$TMP_O"
 
 # Step 4: Link (output = original basename)
-ld -n -m elf_x86_64 -static -o "$BASENAME" -e _main "$TMP_O" -T link.ld --gc-sections
+"$LD_BIN" -n -m "$LD_EMUL" -static -o "$BASENAME" -e _main "$TMP_O" -T link.ld --gc-sections
 
 # Step 5: Strip
-strip "$BASENAME" 2>/dev/null || true
+"$STRIP_BIN" "$BASENAME" 2>/dev/null || true
 
 # Step 6: sstrip (if available)
 if [ $HAS_SSTRIP -eq 1 ]; then
@@ -480,9 +721,3 @@ echo "✅ Done!"
 ls -lh "$BASENAME"
 echo ""
 echo "📦 Final binary: ./$BASENAME"
-
-if [ -n "$BACKUP" ]; then
-    cp "$BACKUP" "$INPUT"
-    rm -f "$BACKUP"
-    TMP_SRC=""
-fi

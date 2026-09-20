@@ -4,6 +4,10 @@
 
 **cib** is a tool that strips C binaries down to the bare minimum — removing libc, startup code, debug info, and section headers — to produce a tiny static Linux binary.
 
+It runs on **x86_64** and **aarch64**, and can cross-compile between the two.
+
+---
+
 ## The Problem
 
 When you compile a simple C program:
@@ -28,7 +32,7 @@ With default GCC, you get a binary that's **~900KB**. Most of that is:
 
 ## The Solution
 
-With `cib`, the same code compiles to **169 bytes** — statically linked, no libc, no startup overhead, no bullshit.
+With `cib`, the same code compiles to **169 bytes** on x86-64 — statically linked, no libc, no startup overhead, no bullshit.
 
 ```bash
 $ cib hello.c
@@ -38,9 +42,13 @@ $ ./hello
 Hello, World!
 ```
 
+On aarch64 the byte count differs — the x86-64-specific tricks described below don't all translate — but the same order-of-magnitude reduction applies. See [Platform Support](#platform-support).
+
 ---
 
 ## How It Works
+
+The following describes the x86-64 backend. The aarch64 backend performs the equivalent set of transforms against the ARM syscall ABI, with different byte-level tricks.
 
 1. **Injects a minimal runtime** — replaces libc with tiny syscall wrappers
 2. **Compiles with extreme flags** — optimizes for size, removes all bloat
@@ -70,8 +78,6 @@ cib provides a minimal set of functions. Use them as-is, or add your own.
 | `strlen()` | ✅ |
 | `GET_PARAMETERS()` | ✅ (macro) |
 
----
-
 ### What's Not Supported
 
 - Anything below `main` — all helpers must go above it, never write code below `main`
@@ -87,7 +93,7 @@ You can add more functions by editing the cib source, or by including them direc
 | Use cib if you want... | Use libc if you need... |
 |------------------------|-------------------------|
 | Tiny binaries | Full C standard library |
-| Zero startup overhead | malloc() / free() |
+| Zero startup overhead | easy Multi-threading |
 | Your code runs on the first CPU cycle | Portable code |
 | To own everything | To save time writing wrappers |
 
@@ -95,39 +101,140 @@ You can add more functions by editing the cib source, or by including them direc
 
 ## Platform Support
 
-- **Architecture:** x86-64 (64-bit)
-- **Operating System:** Linux
-- **Binary Format:** ELF64
+cib runs on Linux, targeting ELF64. Two architectures are supported:
 
-It may work on ARM or other platforms with modifications — you'll need to adjust the syscall numbers and ABI.
+| Architecture | Native | Cross-compile |
+|--------------|--------|---------------|
+| `x86_64`     | ✅     | ✅ (from aarch64) |
+| `aarch64`    | ✅     | ✅ (from x86_64)  |
+
+Select a non-host architecture with `--target=`:
+
+```bash
+cib --target=aarch64 hello.c
+file hello   # ELF 64-bit LSB executable, ARM aarch64
+```
+
+The syscall ABI differs between the two targets, and cib handles that transparently — same source, same CLI, just a different `--target`.
+
+**A note on size:** the byte-level optimizations described in *How It Works* (the `push 60; pop rax` exit sequence, the `edi` register-return trick, the literal-constraint stack squeeze) are **x86-64 specific**. The same program on aarch64 will be somewhat larger, though still far smaller than a libc build. If you cross-compile and see different sizes than the README's numbers, that's expected.
+
+Anything else — 32-bit hosts, macOS, BSD, Windows, other ISAs — is rejected at startup.
 
 ---
 
 ## Requirements
 
-- `gcc`
-- `as` (GNU assembler)
-- `ld` (GNU linker)
-- `strip`
-- `sstrip` (from [ELFkickers](https://github.com/BR903/ELFkickers))
+### Native Toolchain
+
+You need these on every machine that runs cib, regardless of target.
+
+**Arch / Artix:**
+```bash
+sudo pacman -S gcc binutils
+```
+
+**Debian / Ubuntu:**
+```bash
+sudo apt install build-essential
+```
+
+**Fedora / RHEL:**
+```bash
+sudo dnf install gcc binutils
+```
+
+This gives you `gcc`, `as`, `ld`, and `strip`.
+
+**Windows:** cib does not run on Windows directly. Use WSL (Windows Subsystem for Linux) with a Linux distribution, then follow the Debian/Ubuntu or Arch instructions above inside WSL.
+
+### sstrip (Optional, Recommended)
+
+`sstrip` strips the ELF section header table, which `strip` alone does not remove. Without it, cib still works but the binary is slightly larger.
+
+**Arch / Artix:**
+```bash
+sudo pacman -S elfkickers
+```
+
+**Debian / Ubuntu / Fedora:**
+Not packaged. Build from source:
+```bash
+git clone https://github.com/BR903/ELFkickers.git
+cd ELFkickers/sstrip
+make
+sudo make install
+```
+
+If `sstrip` is not found, cib prints a warning and continues.
+
+### Cross-Compilation Toolchains
+
+You only need these if you plan to use `--target` to build for an architecture other than your host.
+
+#### x86_64 → aarch64 (the common case)
+
+Building ARM64 binaries on an x86_64 machine.
+
+**Arch / Artix:**
+```bash
+sudo pacman -S aarch64-linux-gnu-gcc
+```
+
+This package provides the entire cross-toolchain: `aarch64-linux-gnu-gcc`, `aarch64-linux-gnu-as`, `aarch64-linux-gnu-ld`, and `aarch64-linux-gnu-strip`.
+
+**Debian / Ubuntu:**
+```bash
+sudo apt install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+```
+
+**Fedora / RHEL:**
+```bash
+sudo dnf install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+```
+
+#### aarch64 → x86_64
+
+Building x86_64 binaries on an ARM64 machine.
+
+**Debian / Ubuntu:**
+```bash
+sudo apt install gcc-x86-64-linux-gnu binutils-x86-64-linux-gnu
+```
 
 ---
 
 ## Installation
 
-### Step 1.
-
 ```bash
-sudo cp cib /usr/local/bin/
-```
-
-### Step 2.
-
-```bash
+sudo cp cib /usr/local/bin/cib
 sudo chmod +x /usr/local/bin/cib
 ```
 
-Now you can run `cib` from anywhere.
+Or copy it anywhere on your `PATH`. It is a single self-contained bash script with no other dependencies.
+
+### Verifying the Installation
+
+Compile the bundled `hello.c`:
+
+```bash
+cib hello.c
+```
+
+Then run the result:
+
+```bash
+./hello
+```
+
+If you installed a cross-toolchain, verify that too:
+
+```bash
+cib --target=aarch64 hello.c
+file hello       # should report: ELF 64-bit LSB executable, ARM aarch64
+```
+
+If the cross-toolchain is missing, cib will tell you exactly which binary it couldn't find and what package to install.
 
 ---
 
@@ -139,6 +246,7 @@ cib -S main.c            # Generate assembly (.s) and stop
 cib main.s -as           # Assemble existing .s file
 cib -R main.c            # Print the generated raw C and stop
 cib -RC main.c           # Compile the raw C as-is (no return mangling)
+cib --target=aarch64 main.c   # Cross-compile to ARM64
 ```
 
 ---
@@ -156,18 +264,17 @@ int main() {
 cib hello.c
 ```
 
-### Becomes 169 bytes statically linked binary
+### Becomes 169 bytes statically linked binary (x86-64)
 
 ---
 
-## Example 2 `ttt.c` - From the project folder, it's a Tic-Tac-Toe written by me quickly, just to see if I can make it smaller.
-
+## Example 2 `ttt.c` — From the project folder, it's a Tic-Tac-Toe written by me quickly, just to see if I can make it smaller.
 
 ```bash
 cib ttt.c
 ```
 
-### Becomes 1572 bytes statically linked binary
+### Becomes 1572 bytes statically linked binary (x86-64)
 
 ---
 
@@ -177,7 +284,7 @@ cib automatically provides access to command-line arguments via a macro.
 
 ### `GET_PARAMETERS()`
 
-Uses this macro at the **start** of `main()` to extract `argc` and `argv`:
+Uses this macro in x86_64 at the **start** of `main()` to extract `argc` and `argv`:
 
 ```c
 int __argc;
