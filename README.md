@@ -4,7 +4,40 @@
 
 **cib** is a tool that strips C binaries down to the bare minimum — removing libc, startup code, debug info, and section headers — to produce a tiny static Linux binary.
 
-It runs on **x86_64** and **aarch64**, and can cross-compile between the two.
+It runs natively on **x86_64** and **aarch64**, and can cross-compile between the two.
+
+---
+
+## Table of Contents
+
+- [The Problem](#the-problem)
+- [The Solution](#the-solution)
+- [How It Works](#how-it-works)
+- [Supported Functions](#supported-functions)
+  - [What's Not Supported](#whats-not-supported)
+- [Trade-offs](#trade-offs)
+- [Platform Support](#platform-support)
+- [Requirements](#requirements)
+  - [Native Toolchain](#native-toolchain)
+  - [sstrip (Optional, Recommended)](#sstrip-optional-recommended)
+  - [Cross-Compilation Toolchains](#cross-compilation-toolchains)
+- [Installation](#installation)
+  - [Verifying the Installation](#verifying-the-installation)
+- [Usage](#usage)
+- [Optimization Tiers](#optimization-tiers)
+  - [Notes](#notes)
+  - [Reference Data](#reference-data)
+  - [Choosing a Tier](#choosing-a-tier)
+  - [Default](#default)
+- [Assembly Output Flags](#assembly-output-flags)
+  - [Incompatibility with -Zx](#incompatibility-with--zx)
+- [Example `hello.c`](#example-helloc)
+- [Example 2 `ttt.c`](#example-2-tttc)
+- [Command-Line Arguments](#command-line-arguments)
+  - [GET_PARAMETERS()](#get_parameters)
+  - [Variables](#variables)
+  - [Example](#example)
+- [License](#license)
 
 ---
 
@@ -32,7 +65,7 @@ With default GCC, you get a binary that's **~900KB**. Most of that is:
 
 ## The Solution
 
-With `cib`, the same code compiles to **169 bytes** on x86-64 — statically linked, no libc, no startup overhead, no bullshit.
+With `cib`, the same code compiles to **169 bytes** on x86-64 or **192 bytes** on aarch64 — statically linked, no libc, no startup overhead, no bloat.
 
 ```bash
 $ cib hello.c
@@ -42,13 +75,22 @@ $ ./hello
 Hello, World!
 ```
 
-On aarch64 the byte count differs — the x86-64-specific tricks described below don't all translate — but the same order-of-magnitude reduction applies. See [Platform Support](#platform-support).
+```bash
+$ cib --target=aarch64 hello.c
+🔎 Platform: Linux ELF x86_64  →  cross-compiling for aarch64
+✅ Done!
+-rwxr-xr-x 1 user user 192 Jun 25 17:10 hello
+$ qemu-aarch64 ./hello
+Hello, World!
+```
+
+The aarch64 byte count is higher because the byte-level tricks described below are x86-64-specific. The general technique — removing libc, injecting a minimal runtime, hijacking the exit path, stripping sections — applies equally to both. The order-of-magnitude reduction is the same.
 
 ---
 
 ## How It Works
 
-The following describes the x86-64 backend. The aarch64 backend performs the equivalent set of transforms against the ARM syscall ABI, with different byte-level tricks.
+The pipeline applies to both architectures. Steps 8–10 describe x86-64-specific byte optimizations; the aarch64 backend performs an equivalent set of transforms against the ARM syscall ABI.
 
 1. **Injects a minimal runtime** — replaces libc with tiny syscall wrappers
 2. **Compiles with extreme flags** — optimizes for size, removes all bloat
@@ -57,9 +99,14 @@ The following describes the x86-64 backend. The aarch64 backend performs the equ
 5. **Links with a custom linker script** — merges sections, discards GNU bloat
 6. **Strips everything** — `strip` + `sstrip` remove symbols and section headers
 7. **Truncates trailing garbage** — removes NOTE segments and null bytes
+
+The remaining steps are x86-64 specific:
+
 8. **String-Literal Constraint Optimization** — Replaces local stack variables inside system call wrappers (like `char nl = '\n'`) with direct string-literal constraints (`"S"("\n")`). This prevents the compiler from generating instructions to allocate stack frames and write to memory at runtime, shaving off **3 bytes** of instruction bloat.
 9. **The C ABI & C99 `main` Hijack** — Bypasses standard C calling conventions (which mandate returning values through the `EAX` register) by declaring a global register variable `register int _edi asm("edi")` and macro-redefining `return` to `_edi =`. By also renaming `main` to `_main` to bypass implicit C99 return-zero bloat, GCC is forced to write exit codes directly into the destination syscall register (`edi`) using an optimized `xor edi, edi`, shaving off **2 bytes**.
 10. **Stack-Squeezed Exit Syscall** — Replaces the standard 5-byte `mov eax, 60` instruction (`B8 3C 00 00 00`) with a 3-byte `push 60; pop rax` sequence (`6A 3C 58`). Because the immediate value `60` is small, the CPU utilizes the highly compressed `push imm8` opcode, leaving a net-zero footprint on the stack pointer while shaving off **2 bytes** of machine code.
+
+The aarch64 backend uses a different set of byte-level tricks against its own syscall ABI (`svc #0` with `x8` for the syscall number, `x0`–`x5` for arguments, `exit = 93`, `write = 64`, `read = 63`, `brk = 214`), but the structural approach is identical.
 
 ---
 
@@ -76,7 +123,7 @@ cib provides a minimal set of functions. Use them as-is, or add your own.
 | `printf()` | ✅ But only - (`%c`, `%d`, `%s`) |
 | `scanf()` | ✅ (basic) |
 | `strlen()` | ✅ |
-| `GET_PARAMETERS()` | ✅ (macro) |
+| `GET_PARAMETERS()` | ✅ (macro, both architectures) |
 
 ### What's Not Supported
 
@@ -108,14 +155,15 @@ cib runs on Linux, targeting ELF64. Two architectures are supported:
 | `x86_64`     | ✅     | ✅ (from aarch64) |
 | `aarch64`    | ✅     | ✅ (from x86_64)  |
 
-Select a non-host architecture with `--target=`:
+Both are first-class targets. `cib` auto-detects the host architecture and selects the native toolchain by default. Use `--target=` to pick a different one:
 
 ```bash
-cib --target=aarch64 hello.c
-file hello   # ELF 64-bit LSB executable, ARM aarch64
+cib --target=aarch64 hello.c   # build ARM64 (from x86_64 or on aarch64 host)
+cib --target=x86_64 hello.c    # build x86_64 (from aarch64 or on x86_64 host)
+file hello                     # reports the actual target
 ```
 
-The syscall ABI differs between the two targets, and cib handles that transparently — same source, same CLI, just a different `--target`.
+The `--target=` flag accepts `x86_64`, `aarch64`, and the aliases `amd64` and `arm64`. The syscall ABI differs between the two targets, and cib handles that transparently — same source, same CLI, just a different `--target`.
 
 **A note on size:** the byte-level optimizations described in *How It Works* (the `push 60; pop rax` exit sequence, the `edi` register-return trick, the literal-constraint stack squeeze) are **x86-64 specific**. The same program on aarch64 will be somewhat larger, though still far smaller than a libc build. If you cross-compile and see different sizes than the README's numbers, that's expected.
 
@@ -170,9 +218,9 @@ If `sstrip` is not found, cib prints a warning and continues.
 
 ### Cross-Compilation Toolchains
 
-You only need these if you plan to use `--target` to build for an architecture other than your host.
+You only need these if you plan to use `--target` to build for an architecture other than your host. Both directions are supported.
 
-#### x86_64 → aarch64 (the common case)
+#### x86_64 → aarch64
 
 Building ARM64 binaries on an x86_64 machine.
 
@@ -197,9 +245,19 @@ sudo dnf install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
 Building x86_64 binaries on an ARM64 machine.
 
+**Arch / Artix:**
+```bash
+yay -S x86_64-linux-gnu-gcc    # AUR; provides the full x86_64 cross-toolchain
+```
+
 **Debian / Ubuntu:**
 ```bash
 sudo apt install gcc-x86-64-linux-gnu binutils-x86-64-linux-gnu
+```
+
+**Fedora / RHEL:**
+```bash
+sudo dnf install gcc-x86-64-linux-gnu binutils-x86-64-linux-gnu
 ```
 
 ---
@@ -234,6 +292,13 @@ cib --target=aarch64 hello.c
 file hello       # should report: ELF 64-bit LSB executable, ARM aarch64
 ```
 
+Or, from an ARM host:
+
+```bash
+cib --target=x86_64 hello.c
+file hello       # should report: ELF 64-bit LSB executable, x86-64
+```
+
 If the cross-toolchain is missing, cib will tell you exactly which binary it couldn't find and what package to install.
 
 ---
@@ -241,13 +306,151 @@ If the cross-toolchain is missing, cib will tell you exactly which binary it cou
 ## Usage
 
 ```bash
-cib main.c               # Compile to tiny binary
-cib -S main.c            # Generate assembly (.s) and stop
-cib main.s -as           # Assemble existing .s file
-cib -R main.c            # Print the generated raw C and stop
-cib -RC main.c           # Compile the raw C as-is (no return mangling)
+# Basic compilation (native host, default tier)
+cib main.c                    # Compile to tiny binary (default -Z0)
+cib main.s -as                # Assemble an existing .s file
+
+# Architecture selection
 cib --target=aarch64 main.c   # Cross-compile to ARM64
+cib --target=x86_64 main.c    # Cross-compile to x86_64
+
+# Optimization tiers
+cib -Z0 main.c                # Smallest-priority (default)
+cib -Z1 main.c                # Size-priority, normal encodings
+cib -Z2 main.c                # Compile-speed priority (-O0)
+cib -Z3 main.c                # Light runtime optimization (-O1)
+cib -Z4 main.c                # Balanced (-O2)
+cib -Z5 main.c                # Max runtime optimization (-O3)
+
+# Assembly output
+cib -S main.c                 # Emit assembly at current -Z tier and stop
+cib -E main.c                 # Emit readable assembly (-Og) and stop
+cib -EC main.c                # Emit readable assembly (-Og) and continue to binary
+
+# Raw C inspection
+cib -R main.c                 # Print the generated raw C and stop
+cib -RC main.c                # Compile the raw C as-is (no return mangling)
 ```
+
+---
+
+## Optimization Tiers
+
+cib exposes six optimization tiers through `-Z0` through `-Z5`. Each tier
+trades binary size, compile time, and runtime performance differently.
+
+| Flag | GCC flag | Description |
+|------|----------|-------------|
+| `-Z0` | `-Oz` | Prioritizes small binary size. The compiler is allowed to emit more instructions if they encode in fewer bytes. This is the default. |
+| `-Z1` | `-Os` | Optimizes for size, but the compiler is no longer allowed to shrink individual instructions on purpose. Uses normal-size encodings. |
+| `-Z2` | `-O0` | Size no longer matters. Optimization for compiler speed. GCC runs no optimization passes at all. Fastest compile, largest and slowest output. |
+| `-Z3` | `-O1` | Size no longer matters. Prioritizes compiler speed with a small amount of runtime optimization. |
+| `-Z4` | `-O2` | Size no longer matters. Balanced between compiler speed and execution speed. |
+| `-Z5` | `-O3` | Size no longer matters. Maximum runtime optimization, at the cost of longer compile times. |
+
+### Notes
+
+- **`-Z0` and `-Z1` are the size-priority tiers.** Everything from `-Z2` up assumes binary size is not a concern.
+- **`-Z0` is not guaranteed to be the smallest.** `-Oz` optimizes aggressively for size, but not optimally. GCC's `-Oz` heuristic makes per-instruction decisions that can be globally suboptimal. On a program with many identical loops, `-Z4` (`-O2`) has been measured to produce a binary ~8% smaller than `-Z0`, because `-Oz` allocates the loop counter to an extended register (`r8`–`r15`) which requires a REX prefix on every instruction that touches it, while `-O2` allocates to a legacy register (`rbx`/`rcx`/`rdx`) which does not. This finding is specific to x86-64; aarch64 register allocation does not have the same REX-prefix cost. If binary size is critical, benchmark `-Z0` and `-Z4` for your specific program.
+- **`-Z0` emits more instructions than `-Z4`/`-Z5`.** The `push imm8; pop reg` substitution that saves bytes at `-Z0` costs an extra instruction and two stack operations per use. For syscall-bound programs the difference is invisible; for compute-bound code it matters.
+- **`-Z3` can be an awkward middle ground.** GCC's `-O1` occasionally produces output that is neither small nor fast — for example, emitting a runtime loop to compute a value the compiler could have constant-folded. This is a GCC phase-ordering artifact, not a cib issue.
+- **`-Z4` and `-Z5` may produce identical output** for simple programs that have nothing to unroll or vectorize. They diverge on workloads with loops and math.
+- **Bigger binary does not always mean slower execution.** A `-Z5` binary can be larger on disk than a `-Z4` binary while executing fewer instructions and fewer cycles per run, because `-O3`'s extra passes produce tighter dynamic code at the cost of static size.
+- **Smaller binary does not always mean faster wall-clock execution.** For programs launched repeatedly (thousands of times per second), the smaller binary wins on process startup cost. For programs launched once and run for a long time, the binary with fewer instructions per iteration wins. Neither tier dominates across all usage patterns.
+- The tier names (`-Z0` … `-Z5`) are cib-specific. They do not match GCC's `-O` levels, though each maps to one.
+
+### Reference Data
+
+The following was measured on x86-64, Artix Linux, GCC 16.2.1, using a
+1000-line C test file with 332 identical 5-iteration loops. The relative
+ordering of tiers is expected to hold on aarch64, but absolute numbers
+will differ.
+
+**Compile time (1000 iterations):**
+
+| Tier | Total | Per compile |
+|------|------:|------------:|
+| `-Z2` | 83.2s | 83ms |
+| `-EC` | 99.6s | 100ms |
+| `-Z3` | 159.8s | 160ms |
+| `-Z1` | 218.3s | 218ms |
+| `-Z0` | 220.7s | 221ms |
+| `-Z4` | 225.3s | 225ms |
+| `-Z5` | 237.2s | 237ms |
+
+**Binary size (x86-64):**
+
+| Tier | Bytes |
+|------|------:|
+| `-Z4` | 8682 |
+| `-Z0` | 9466 |
+| `-Z1` | 9466 |
+| `-Z5` | 10025 |
+| `-Z3` | 10674 |
+| `-EC` | 11282 |
+| `-Z2` | 17589 |
+
+**Runtime** (`perf stat -r 10000`, output to /dev/null, x86-64):
+
+| Tier | Task-clock | Instructions | Cycles |
+|------|-----------:|-------------:|-------:|
+| `-Z4` | **9.545ms** | 443,565 | 1,358,308 |
+| `-Z0` | 9.571ms | 445,224 | 1,382,819 |
+| `-Z5` | 9.594ms | **433,604** | **1,334,310** |
+
+All three tiers show 1 page fault per run.
+
+### Choosing a Tier
+
+| Goal | Tier |
+|------|------|
+| Fastest compile | `-Z2` |
+| Smallest binary on typical code | `-Z0` |
+| Smallest binary on loop-heavy code | benchmark `-Z0` vs `-Z4` (x86-64) |
+| Fastest wall-clock for a repeatedly launched binary | `-Z4` |
+| Fewest instructions per run for a long-running binary | `-Z5` |
+| Readable assembly | `-E` or `-EC` |
+
+No tier is best at everything. The only way to know which tier wins for a
+specific program is to compile each candidate and measure. cib does not
+choose for you.
+
+### Default
+
+If no `-Z` flag is given, cib uses `-Z0`.
+
+---
+
+## Assembly Output Flags
+
+`-E` and `-EC` control whether cib stops after generating assembly or continues to a full binary. They are separate from the optimization tier.
+
+| Flag | What it does |
+|------|--------------|
+| `-E` | Generate assembly using `-Og`, write it to a `.s` file, and stop. The `.s` file is kept for inspection. |
+| `-EC` | Same as `-E`, but continue past the assembly step: assemble, link, strip, and produce the executable. The `.s` file is still kept. |
+
+The `C` in `-EC` means "continue" — the same convention used by `-RC`, which prints the raw C and optionally continues to compile it.
+
+`-E` uses `-Og` internally. `-Og` is GCC's "optimize for debugging" level: it performs light optimization but deliberately avoids passes that obscure the relationship between source lines and generated instructions. Breakpoints land where you set them, variables are not optimized out, and the assembly is far closer to a one-to-one mapping with your source. The trade-off is that `-Og` does not constant-fold loops, so output is bigger and slower than `-Z4` or `-Z5`. It is, however, fast to compile — `-EC` was the second-fastest tier in the reference measurements above, behind only `-Z2`.
+
+Use `-E` when you want to read what the compiler actually did. Use `-EC` when you want to read it *and* run it.
+
+### Incompatibility with -Zx
+
+`-E` and `-EC` are **mutually exclusive with `-Z0` through `-Z5`.** Passing both produces an error:
+
+```
+cib: error: -E/-EC and -Zx are mutually exclusive
+```
+
+The reason is that `-E` and `-EC` hardcode `-Og`, while `-Zx` selects a different optimization level. There is no way to combine "readable debugger-friendly assembly" with "maximum runtime speed" — they are opposite goals. If you want assembly output at a specific `-Z` tier, use `-S` instead:
+
+| Flag | Optimization | Output |
+|------|--------------|--------|
+| `-S` | current `-Z` tier (or `-Z0` default) | `.s` file, stop |
+| `-E` | `-Og` | `.s` file, stop |
+| `-EC` | `-Og` | `.s` file, continue to binary |
 
 ---
 
@@ -266,9 +469,17 @@ cib hello.c
 
 ### Becomes 169 bytes statically linked binary (x86-64)
 
+```bash
+cib --target=aarch64 hello.c
+```
+
+### Becomes 192 bytes statically linked binary (aarch64)
+
 ---
 
-## Example 2 `ttt.c` — From the project folder, it's a Tic-Tac-Toe written by me quickly, just to see if I can make it smaller.
+## Example 2 `ttt.c`
+
+From the project folder, it's a Tic-Tac-Toe written by me quickly, just to see if I can make it smaller.
 
 ```bash
 cib ttt.c
@@ -280,16 +491,13 @@ cib ttt.c
 
 ## Command-Line Arguments
 
-cib automatically provides access to command-line arguments via a macro.
+cib automatically provides access to command-line arguments via a macro. The macro is architecture-specific and cib selects the right one automatically.
 
 ### `GET_PARAMETERS()`
 
-Uses this macro in x86_64 at the **start** of `main()` to extract `argc` and `argv`:
+On **x86_64**, the macro extracts `argc` and `argv` from the stack at process entry:
 
 ```c
-int __argc;
-char **__argv;
-
 #define GET_PARAMETERS() \
     __asm__ volatile ( \
         "mov rax, [rsp]\n" \
@@ -297,19 +505,24 @@ char **__argv;
         "lea rax, [rsp+8]\n" \
         "mov [__argv], rax\n" \
     )
-
-int main() {
-    GET_PARAMETERS();
-    
-    if (__argc > 1) {
-        printf("%s\n", __argv[1]);
-    }
-    
-    return 0;
-}
 ```
 
-But you do not need to include that code. It's already included for you. So all you have to do is this:
+On **aarch64**, it uses `adrp` / `:lo12:` to reach the globals:
+
+```c
+#define GET_PARAMETERS() \
+    __asm__ volatile ( \
+        "ldr x9, [sp]\n" \
+        "adrp x10, __argc\n" \
+        "str x9, [x10, :lo12:__argc]\n" \
+        "add x9, sp, #8\n" \
+        "adrp x10, __argv\n" \
+        "str x9, [x10, :lo12:__argv]\n" \
+        : : : "x9", "x10", "memory" \
+    )
+```
+
+You don't need to include either of them — cib injects the correct one for the target. All you write is:
 
 ```c
 int main() {
@@ -337,6 +550,15 @@ $ ./hello world
 world
 $ ./hello 42
 42
+```
+
+Same source, same behavior on aarch64:
+
+```bash
+$ cib --target=aarch64 hello.c
+✅ Done!
+$ qemu-aarch64 ./hello world
+world
 ```
 
 ---

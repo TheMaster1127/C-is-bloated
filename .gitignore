@@ -13,3 +13,6 @@ h
 h.c
 inst.md
 old_cib_x86-64
+bench.log
+test
+test.s

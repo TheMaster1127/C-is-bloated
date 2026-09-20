@@ -58,14 +58,29 @@ show_usage() {
     cat <<EOF
 Usage: cib [options] <file.c|file.s>
 
-Options:
-  -S                    Generate assembly (.s) file from C source and stop (keeps .s)
+Optimization tiers:
+  -Z0                   Smallest binary (default). Uses -Oz.
+  -Z1                   Small. Uses -Os.
+  -Z2                   Fast compile, no optimization. Uses -O0.
+  -Z3                   Compile speed + light runtime opt. Uses -O1.
+  -Z4                   Balanced. Uses -O2.
+  -Z5                   Max runtime speed. Uses -O3.
+
+Assembly output:
+  -S                    Emit assembly at the current -Z tier and stop (keeps .s)
+  -E                    Emit readable assembly (-Og) and stop (keeps .s)
+  -EC                   Emit readable assembly (-Og) and continue to binary
+
+Other options:
   -as                   Assemble an existing .s file (skip C compilation/injection)
   -t <arch>             Cross-compile for the given target architecture
   --target=<arch>       Same as -t. Accepts: x86_64, aarch64 (or amd64, arm64)
   -R                    Print the generated raw C and stop
   -RC                   Compile the raw C as-is (no return mangling)
   -h, --help            Show this help
+
+Notes:
+  -E and -EC are mutually exclusive with -Z0 through -Z5.
 
 Native build (default):  target = host
 Cross-compile examples:
@@ -84,6 +99,9 @@ RAW_COMPILE=0
 INPUT=""
 BACKUP=""
 TARGET_ARCH=""
+OPT_TIER=0
+Z_EXPLICIT=0
+E_MODE=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -94,6 +112,16 @@ while [ $# -gt 0 ]; do
         -RC)
             RAW_COMPILE=1
             ;;
+       	-Z0|-Z1|-Z2|-Z3|-Z4|-Z5)
+       	    OPT_TIER="${1#-Z}"
+       	    Z_EXPLICIT=1
+       	    ;;
+       	-E)
+       	    E_MODE=1
+       	    ;;
+       	-EC)
+           E_MODE=2
+           ;;
         -S)
             KEEP_ASM=1
             MODE="asm"
@@ -141,6 +169,40 @@ done
 # ---------- Normalize and validate target ----------
 if [ -z "$TARGET_ARCH" ]; then
     TARGET_ARCH="$HOST_ARCH"
+fi
+
+
+# ---------- Validate -E/-EC vs -Zx ----------
+if [ "$E_MODE" -ne 0 ] && [ "$Z_EXPLICIT" -eq 1 ]; then
+    echo "❌ -E/-EC and -Zx are mutually exclusive."
+    echo "   -E and -EC hardcode -Og for readable assembly."
+    echo "   Use -S to emit assembly at the current -Z tier."
+    exit 1
+fi
+
+# ---------- Resolve optimization flag ----------
+if [ "$E_MODE" -ne 0 ]; then
+    OPT_FLAG="-Og"
+else
+    case "$OPT_TIER" in
+        0) OPT_FLAG="-Oz" ;;
+        1) OPT_FLAG="-Os" ;;
+        2) OPT_FLAG="-O0" ;;
+        3) OPT_FLAG="-O1" ;;
+        4) OPT_FLAG="-O2" ;;
+        5) OPT_FLAG="-O3" ;;
+        *) OPT_FLAG="-Oz" ;;
+    esac
+fi
+
+# ---------- Resolve mode from -E/-EC ----------
+if [ "$E_MODE" -eq 1 ]; then
+    KEEP_ASM=1
+    MODE="asm"
+fi
+if [ "$E_MODE" -eq 2 ]; then
+    KEEP_ASM=1
+    # MODE stays "normal" so it continues through assemble/link
 fi
 
 case "$TARGET_ARCH" in
@@ -654,11 +716,12 @@ EOF
 
 # MASTER COMMAND
 # shellcheck disable=SC2086
-"$CC" -S -Os -Oz $ASM_FLAGS \
+"$CC" -S $OPT_FLAG $ASM_FLAGS \
     -nostdlib \
     -fno-pie \
     -fno-optimize-sibling-calls \
     -fno-asynchronous-unwind-tables \
+    -fno-unwind-tables \
     -fno-dwarf2-cfi-asm \
     -fno-builtin \
     -fno-ident \
@@ -673,6 +736,26 @@ awk '/call-clobbered register used for global register variable/ {skip=1; next} 
 
 # Step 2: Clean up assembly (remove unneeded directives)
 sed -i '/\.file/d; /\.size/d; /\.type/d; /\.section.*\.note\.GNU-stack/d;' "$TMP_S"
+sed -i -e '/^#APP$/d' -e '/^#NO_APP$/d' -e '/^# [0-9]/d' -e '/^$/d' "$TMP_S"
+sed -i \
+  -e '/^#APP$/d' \
+  -e '/^#NO_APP$/d' \
+  -e '/^# [0-9]/d' \
+  -e '/^\/\/ [0-9]/d' \
+  -e '/^\/\/ [0-9"]/d' \
+  -e '/^\/\/ [0-9]* "" /d' \
+  -e '/^\s*\.LCFI/d' \
+  -e '/^\s*\.Lframe/d' \
+  -e '/^\s*\.LSCIE/d' \
+  -e '/^\s*\.LSFDE/d' \
+  -e '/^\s*\.LASFDE/d' \
+  -e '/^\s*\.LECIE/d' \
+  -e '/^\s*\.LEFDE/d' \
+  -e '/^\s*\.eh_frame/d' \
+  -e '/^\s*\.aeabi_/d' \
+  -e '/^\s*\.arch\s/d' \
+  -e '/^$/d' \
+  "$TMP_S"
 
 # Use the file name from the environment variable
 file="$TMP_S"
