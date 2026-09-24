@@ -716,7 +716,7 @@ EOF
 
 # MASTER COMMAND
 # shellcheck disable=SC2086
-"$CC" -S $OPT_FLAG $ASM_FLAGS \
+"$CC" -I "$PWD" -S $OPT_FLAG $ASM_FLAGS \
     -nostdlib \
     -fno-pie \
     -fno-optimize-sibling-calls \
